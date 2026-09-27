@@ -1,0 +1,40 @@
+<!--
+  Fragmento a fusionar en ios/Runner/Info.plist.
+
+  Dónde va: como una key más dentro del <dict> raíz del plist (al mismo nivel
+  que CFBundleName, CFBundleIdentifier, etc. que ya trae el proyecto Flutter).
+
+  Qué hace: registra el esquema casaya:// para que iOS entregue el redirect de
+  Mercado Pago a esta app en lugar de dejarlo en Safari. A diferencia de
+  Android, iOS con un esquema custom simple no distingue por "host" a nivel de
+  sistema — cualquier casaya://lo-que-sea abre la app — así que el filtrado
+  por host ("cobros" vs. cualquier otro) se hace en Dart, en el manejador de
+  app_links (ver payout_deeplink.dart).
+-->
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLName</key>
+    <string>app.casaya.payoutlink</string>
+    <key>CFBundleURLSchemes</key>
+    <array>
+      <string>casaya</string>
+    </array>
+  </dict>
+</array>
+
+<!--
+  Opcional pero recomendado — Universal Links en vez de esquema custom puro:
+
+  Si en vez de casaya:// preferís que el redirect use una URL https real
+  (https://casaya.app/cobros/callback) que además abra la app sin pasar por
+  Safari, hace falta:
+    1. Alojar apple-app-site-association en https://casaya.app/.well-known/
+       (sin extensión, Content-Type application/json).
+    2. Agregar la capability "Associated Domains" en Xcode con
+       applinks:casaya.app.
+  Con el esquema custom simple (lo de arriba) alcanza para el MVP: la única
+  diferencia práctica es que un usuario sin la app instalada ve un error de
+  Safari en vez de una página de "descargá la app". Para producción conviene
+  migrar a Universal Links.
+-->

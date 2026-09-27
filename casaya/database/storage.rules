@@ -1,0 +1,64 @@
+rules_version = '2';
+
+// Sin este archivo, Cloud Storage aplica sus reglas por defecto: según cómo
+// se haya inicializado el proyecto, eso es "nadie puede escribir" (rompe la
+// subida de fotos) o "cualquiera con el link puede leer" (expone selfies y
+// antecedentes penales de KYC a quien adivine una ruta). Ninguna de las dos
+// es aceptable, así que esto no es opcional para salir de desarrollo local.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+    function isAdmin() {
+      return signedIn() && request.auth.token.role == 'admin';
+    }
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+    // Las fotos de evidencia importan más que el espacio: 8 MB cubre una
+    // foto de cámara sin comprimir de sobra.
+    function underSizeLimit() {
+      return request.resource.size < 8 * 1024 * 1024;
+    }
+
+    // ---------- fotos del problema, subidas por el cliente al crear la
+    // solicitud: requests/{clienteUid}/archivo.jpg ----------
+    match /requests/{uid}/{fileName} {
+      allow read: if signedIn();   // el técnico asignado necesita verlas antes de aceptar
+      allow create: if isSelf(uid) && isImage() && underSizeLimit();
+      allow update, delete: if false;   // evidencia inmutable una vez subida
+    }
+
+    // ---------- fotos de check-out, subidas por el técnico:
+    // requests/{requestId}/checkout/{técnicoUid}_N.jpg ----------
+    match /requests/{requestId}/checkout/{fileName} {
+      allow read: if signedIn();
+      // No se valida acá que quien sube sea el técnico asignado a esa
+      // solicitud — Storage no puede consultar Firestore sin una Cloud
+      // Function de por medio — así que ese control ya lo hace `checkOut()`
+      // en jobFlow.ts antes de aceptar las rutas. Estas reglas solo exigen
+      // sesión iniciada, tipo de archivo y tamaño.
+      allow create: if signedIn() && isImage() && underSizeLimit();
+      allow update, delete: if false;
+    }
+
+    // ---------- documentos de KYC: kyc/{uid}/tipo.jpg ----------
+    // Los más sensibles de todo el sistema: DNI, selfie, antecedentes
+    // penales. Nadie los lee salvo su dueño y el equipo de administración.
+    match /kyc/{uid}/{fileName} {
+      allow read: if isSelf(uid) || isAdmin();
+      allow create: if isSelf(uid) && underSizeLimit();
+      allow update, delete: if false;
+    }
+
+    // Cualquier otra ruta queda cerrada por defecto.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

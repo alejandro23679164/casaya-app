@@ -1,0 +1,224 @@
+{
+  "_doc": "Esquema de referencia de Firestore para CasaYa. Cada clave de primer nivel es una colección; el objeto que la acompaña describe la forma del documento con tipos y valores permitidos. Los campos con prefijo '!' son escritos SOLO por Cloud Functions (el cliente no tiene permiso de escritura, ver firestore.rules).",
+
+  "users/{uid}": {
+    "uid": "string",
+    "role": "'client' | 'technician' | 'admin'",
+    "fullName": "string",
+    "phone": "string (E.164, ej: +5491122334455)",
+    "!phoneVerified": "boolean — true solo tras OTP de Firebase Auth",
+    "email": "string | null",
+    "photoUrl": "string | null",
+    "locale": "string (ej: 'es-AR')",
+    "createdAt": "timestamp",
+    "disabled": "boolean",
+
+    "address": {
+      "line1": "string",
+      "city": "string",
+      "state": "string",
+      "country": "string (ISO-3166 alpha-2)",
+      "geo": { "lat": "number", "lng": "number", "geohash": "string (precisión 9)" }
+    },
+
+    "emergencyContacts": [
+      { "name": "string", "phone": "string (E.164)", "relation": "string" }
+    ],
+
+    "client": {
+      "!ratingAvg": "number 0..5",
+      "!ratingCount": "number",
+      "!completedRequests": "number",
+      "!cancelledRequests": "number",
+      "!hasVerifiedPaymentMethod": "boolean — true si existe al menos un método confirmado en el PSP",
+      "!paymentCustomerId": "string | null — id del cliente en el PSP (Stripe/MercadoPago). Nunca se guardan datos de tarjeta."
+    },
+
+    "technician": {
+      "!status": "'pending_kyc' | 'in_review' | 'approved' | 'rejected' | 'suspended'",
+      "skills": ["string — ids de services/{serviceId}"],
+      "serviceRadiusKm": "number",
+      "!ratingAvg": "number 0..5",
+      "!ratingCount": "number",
+      "!jobsCompleted": "number",
+      "!acceptanceRate": "number 0..1",
+      "isOnline": "boolean — el técnico lo alterna manualmente",
+      "!payoutAccountId": "string | null — cuenta conectada del PSP para liquidar",
+      "currentGeo": { "lat": "number", "lng": "number", "geohash": "string", "updatedAt": "timestamp" }
+    }
+  },
+
+  "users/{uid}/kyc/{docId}": {
+    "_doc": "Subcolección privada: solo el dueño la lee, solo Cloud Functions/admin la aprueba.",
+    "type": "'id_front' | 'id_back' | 'selfie_liveness' | 'criminal_record' | 'trade_license'",
+    "storagePath": "string — ruta en Cloud Storage, nunca URL pública",
+    "documentNumber": "string | null — cifrado en tránsito, visible solo a admin",
+    "!status": "'uploaded' | 'verified' | 'rejected'",
+    "!provider": "string | null — proveedor de verificación (ej: 'veriff')",
+    "!providerRef": "string | null",
+    "!livenessScore": "number 0..1 | null",
+    "!rejectionReason": "string | null",
+    "uploadedAt": "timestamp",
+    "!reviewedAt": "timestamp | null",
+    "expiresAt": "timestamp | null — antecedentes penales caducan (ej: 12 meses)"
+  },
+
+  "services/{serviceId}": {
+    "_doc": "Catálogo público de solo lectura. Seed en database/seed_services.json.",
+    "category": "'plumbing' | 'electrical' | 'hvac' | 'painting' | 'cleaning' | 'handyman'",
+    "slug": "string (ej: 'plumbing.drain_unclog')",
+    "name": "string",
+    "description": "string",
+    "icon": "string",
+    "pricingModel": "'fixed' | 'hourly' | 'visit_fee_then_quote'",
+    "basePrice": "number — tarifa fija o precio de la primera hora, en centavos",
+    "hourlyRate": "number — centavos por hora adicional",
+    "minimumBillableMinutes": "number",
+    "visitFee": "number — centavos, se cobra aunque el trabajo no se ejecute",
+    "currency": "string (ISO-4217, ej: 'ARS')",
+    "urgencyMultipliers": { "standard": 1.0, "same_day": 1.2, "express_2h": 1.5 },
+    "nightSurchargePct": "number (ej: 0.25 entre 22:00 y 06:00)",
+    "materialsIncluded": "boolean",
+    "estimatedMinutes": "number",
+    "requiresLicense": "boolean — obliga a KYC con matrícula (gas, electricidad)",
+    "active": "boolean"
+  },
+
+  "requests/{requestId}": {
+    "clientId": "string",
+    "!technicianId": "string | null — lo fija el despachador",
+    "serviceId": "string",
+    "category": "string",
+    "!status": "'pending' | 'accepted' | 'en_route' | 'in_progress' | 'completed' | 'cancelled' | 'disputed'",
+    "urgency": "'standard' | 'same_day' | 'express_2h'",
+    "description": "string",
+    "media": [
+      { "storagePath": "string", "type": "'image' | 'video'", "uploadedAt": "timestamp" }
+    ],
+    "address": {
+      "line1": "string",
+      "notes": "string — timbre, piso, referencias",
+      "geo": { "lat": "number", "lng": "number", "geohash": "string" }
+    },
+    "!coarseGeo": {
+      "_doc": "Ubicación aproximada (~1km, geohash de 5 caracteres) que ve el técnico ANTES de aceptar. La dirección exacta se revela al aceptar.",
+      "lat": "number", "lng": "number", "geohash": "string", "approxRadiusM": "number"
+    },
+    "scheduledFor": "timestamp | null — null = ahora mismo",
+    "!quote": {
+      "currency": "string",
+      "basePrice": "number",
+      "urgencyMultiplier": "number",
+      "nightSurcharge": "number",
+      "estimatedLaborMinutes": "number",
+      "serviceFee": "number — comisión de la plataforma",
+      "taxes": "number",
+      "total": "number — en centavos",
+      "isEstimate": "boolean",
+      "computedAt": "timestamp"
+    },
+    "!dispatch": {
+      "attempt": "number",
+      "radiusKm": "number",
+      "offeredTo": ["string — uids ya notificados, evita re-ofrecer"],
+      "expiresAt": "timestamp — vencimiento de la oferta actual (ej: 45s)"
+    },
+    "!completionPin": "string (4 dígitos) — NUNCA legible por el técnico; solo el cliente lo ve al finalizar",
+    "!pinAttempts": "number — bloqueo tras 5 intentos",
+    "!timeline": {
+      "createdAt": "timestamp",
+      "acceptedAt": "timestamp | null",
+      "enRouteAt": "timestamp | null",
+      "checkInAt": "timestamp | null",
+      "checkOutAt": "timestamp | null",
+      "completedAt": "timestamp | null",
+      "cancelledAt": "timestamp | null"
+    },
+    "!checkIn": {
+      "geo": { "lat": "number", "lng": "number" },
+      "distanceToSiteM": "number — se rechaza el check-in si supera 150 m",
+      "photoPath": "string | null"
+    },
+    "!checkOut": {
+      "geo": { "lat": "number", "lng": "number" },
+      "photoPaths": ["string — al menos 1 foto del trabajo terminado, obligatoria"],
+      "technicianNotes": "string",
+      "extraCharges": [{ "concept": "string", "amount": "number", "approvedByClient": "boolean" }]
+    },
+    "cancellation": {
+      "by": "'client' | 'technician' | 'system' | null",
+      "reason": "string | null",
+      "!feeCharged": "number"
+    },
+    "!transactionId": "string | null",
+    "review": {
+      "clientToTech": { "rating": "number 1..5", "comment": "string", "createdAt": "timestamp" },
+      "techToClient": { "rating": "number 1..5", "comment": "string", "createdAt": "timestamp" }
+    }
+  },
+
+  "requests/{requestId}/tracking/{pointId}": {
+    "_doc": "Traza GPS del técnico. TTL de 30 días vía política de retención. Solo la leen el cliente dueño y el técnico asignado.",
+    "lat": "number", "lng": "number", "heading": "number | null", "speedKmh": "number | null", "at": "timestamp"
+  },
+
+  "requests/{requestId}/events/{eventId}": {
+    "_doc": "Bitácora inmutable de auditoría: quién hizo qué y cuándo. Solo escribe el backend.",
+    "type": "string (ej: 'status_changed', 'pin_failed', 'escrow_captured')",
+    "actorId": "string | 'system'",
+    "payload": "map",
+    "at": "timestamp"
+  },
+
+  "transactions/{transactionId}": {
+    "_doc": "Espejo de lo que ocurre en el PSP. La fuente de verdad del dinero es el PSP; acá se guarda el estado para consulta y auditoría.",
+    "requestId": "string",
+    "clientId": "string",
+    "technicianId": "string | null",
+    "currency": "string",
+    "amount": "number — total cobrado al cliente, en centavos",
+    "platformFee": "number",
+    "technicianPayout": "number",
+    "!status": "'requires_payment' | 'held' | 'captured' | 'payout_pending' | 'released' | 'payout_failed' | 'partially_refunded' | 'refunded' | 'failed' | 'charged_back' — la secuencia normal es held → captured → payout_pending → released; payout_pending solo lo resuelve el webhook de payout (o el job de reintento), nunca se salta a released de otra forma",
+    "!payoutStatus": "'pending' | 'processing' | 'completed' | 'unknown' | null — estado del payout en el proveedor; 'captured_pending_payout' es el estado de la transacción mientras esto no confirma",
+    "psp": "'stripe' | 'mercadopago'",
+    "!paymentIntentId": "string — id del pago retenido/capturado en el proveedor",
+    "!payoutId": "string | null — id de la transferencia al técnico; se confirma por webhook, no de forma sincrónica",
+    "!refundId": "string | null",
+    "escrow": {
+      "!heldAt": "timestamp | null",
+      "!capturedAt": "timestamp | null — cuándo se capturó contra la cuenta de la plataforma, antes del payout",
+      "!releasedAt": "timestamp | null — recién se fija cuando el webhook de payout confirma, no al iniciar la transferencia",
+      "releaseMethod": "'client_pin' | 'auto_timeout' | 'admin_resolution' | null",
+      "autoReleaseAt": "timestamp — liberación automática a las 72 h si el cliente no confirma ni disputa"
+    },
+    "!ledger": [
+      { "at": "timestamp", "from": "string", "to": "string", "amount": "number", "reason": "string" }
+    ],
+    "createdAt": "timestamp",
+    "!updatedAt": "timestamp"
+  },
+
+  "panic_alerts/{alertId}": {
+    "userId": "string",
+    "role": "'client' | 'technician'",
+    "requestId": "string | null",
+    "geo": { "lat": "number", "lng": "number", "accuracyM": "number" },
+    "triggeredAt": "timestamp",
+    "!notifiedContacts": [{ "phone": "string", "channel": "'sms' | 'whatsapp'", "sentAt": "timestamp", "ok": "boolean" }],
+    "!status": "'open' | 'acknowledged' | 'resolved' | 'false_alarm'",
+    "!acknowledgedBy": "string | null",
+    "notes": "string"
+  },
+
+  "dispatch_offers/{offerId}": {
+    "_doc": "Oferta efímera dirigida a un técnico. Permite que el técnico consulte solo lo que se le ofreció sin escanear toda la colección requests.",
+    "requestId": "string",
+    "technicianId": "string",
+    "!status": "'sent' | 'accepted' | 'rejected' | 'expired'",
+    "sentAt": "timestamp",
+    "expiresAt": "timestamp",
+    "distanceKm": "number",
+    "estimatedPayout": "number"
+  }
+}

@@ -1,0 +1,189 @@
+rules_version = '2';
+
+// Principio rector: el cliente móvil/web NUNCA escribe dinero, estado de servicio,
+// resultado de KYC ni el PIN. Todo eso pasa por Cloud Functions con Admin SDK,
+// que ignora estas reglas. Aquí solo se permiten lecturas acotadas y las pocas
+// escrituras que son seguras desde el dispositivo.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- Helpers ----------
+    function signedIn() {
+      return request.auth != null;
+    }
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+    // Los claims los fija el backend con setCustomUserClaims: role, kyc, phoneVerified.
+    function role() {
+      return request.auth.token.role;
+    }
+    function isApprovedTech() {
+      return role() == 'technician' && request.auth.token.kyc == 'approved';
+    }
+    function isAdmin() {
+      return role() == 'admin';
+    }
+    // Campos que solo el backend puede tocar.
+    function onlyChanged(allowed) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(allowed);
+    }
+
+    // ---------- users ----------
+    match /users/{uid} {
+      // El técnico asignado necesita ver el perfil público del cliente (y viceversa).
+      // Para simplificar, cualquier usuario autenticado lee el perfil; los datos
+      // sensibles viven en subcolecciones protegidas, no en el documento raíz.
+      allow read: if signedIn();
+
+      allow create: if isSelf(uid)
+                    && request.resource.data.role in ['client', 'technician']
+                    // Nadie se autoproclama verificado.
+                    && !('technician' in request.resource.data
+                         && request.resource.data.technician.keys().hasAny(['status', 'ratingAvg']));
+
+      allow update: if isSelf(uid) && onlyChanged([
+                      'fullName', 'photoUrl', 'locale', 'address',
+                      'emergencyContacts', 'technician'
+                    ])
+                    // Dentro de 'technician' solo se permiten campos operativos.
+                    && (!('technician' in request.resource.data) ||
+                        request.resource.data.technician.diff(resource.data.technician)
+                          .affectedKeys().hasOnly(['skills', 'serviceRadiusKm', 'isOnline', 'currentGeo']));
+
+      allow delete: if false; // baja lógica vía función, nunca borrado directo
+
+      // KYC: el dueño sube y lee; el veredicto lo escribe el backend.
+      match /kyc/{docId} {
+        allow read: if isSelf(uid) || isAdmin();
+        allow create: if isSelf(uid)
+                      && !request.resource.data.keys().hasAny(['status', 'livenessScore', 'reviewedAt']);
+        allow update, delete: if false;
+      }
+    }
+
+    // ---------- services (catálogo) ----------
+    match /services/{serviceId} {
+      allow read: if true;             // catálogo público, alimenta la landing web
+      allow write: if isAdmin();
+    }
+
+    // ---------- requests ----------
+    match /requests/{requestId} {
+      allow read: if signedIn() && (
+                    resource.data.clientId == request.auth.uid ||
+                    resource.data.technicianId == request.auth.uid ||
+                    isAdmin()
+                  );
+
+      // La solicitud se crea por Cloud Function (calcula cotización, PIN y escrow).
+      // Se deja el create cerrado para que no existan solicitudes sin pago retenido.
+      allow create: if false;
+
+      // Únicas escrituras directas permitidas: reseñas del propio rol.
+      allow update: if signedIn()
+                    && onlyChanged(['review'])
+                    && resource.data.status == 'completed'
+                    && (resource.data.clientId == request.auth.uid ||
+                        resource.data.technicianId == request.auth.uid);
+
+      allow delete: if false;
+
+      // Traza GPS: la escribe el técnico asignado mientras el servicio está vivo.
+      match /tracking/{pointId} {
+        allow read: if signedIn() && (
+                      get(/databases/$(database)/documents/requests/$(requestId)).data.clientId == request.auth.uid ||
+                      get(/databases/$(database)/documents/requests/$(requestId)).data.technicianId == request.auth.uid ||
+                      isAdmin()
+                    );
+        allow create: if isApprovedTech()
+                      && get(/databases/$(database)/documents/requests/$(requestId)).data.technicianId == request.auth.uid
+                      && get(/databases/$(database)/documents/requests/$(requestId)).data.status in ['en_route', 'in_progress'];
+        allow update, delete: if false;
+      }
+
+      match /events/{eventId} {
+        allow read: if isAdmin();
+        allow write: if false;         // bitácora de auditoría: solo Admin SDK
+      }
+    }
+
+    // ---------- dispatch_offers ----------
+    match /dispatch_offers/{offerId} {
+      allow read: if signedIn() && resource.data.technicianId == request.auth.uid;
+      allow write: if false;           // aceptar/rechazar va por función callable
+    }
+
+    // ---------- transactions ----------
+    match /transactions/{txId} {
+      allow read: if signedIn() && (
+                    resource.data.clientId == request.auth.uid ||
+                    resource.data.technicianId == request.auth.uid ||
+                    isAdmin()
+                  );
+      allow write: if false;           // el dinero jamás se escribe desde el cliente
+    }
+
+    // ---------- disputas ----------
+    match /disputes/{disputeId} {
+      // Las partes ven su propio reclamo; resolverlo es exclusivo del panel.
+      allow read: if signedIn() && (
+                    resource.data.clientId == request.auth.uid ||
+                    resource.data.technicianId == request.auth.uid ||
+                    isAdmin()
+                  );
+      allow write: if false;           // openDispute y resolveDispute, nada más
+    }
+
+    // ---------- credenciales y auditoría ----------
+    // Tokens OAuth de cobro de los técnicos: son credenciales, no perfil.
+    // Nadie los lee desde un cliente, ni siquiera su dueño.
+    match /payout_accounts/{accountId} {
+      allow read, write: if false;
+    }
+
+    // La auditoría se lee desde el panel vía callable, con el claim ya
+    // verificado en el servidor. Cerrada por completo acá.
+    match /admin_audit/{entryId} {
+      allow read, write: if false;
+    }
+
+    // Deduplicación de webhooks: solo Admin SDK.
+    match /webhook_events/{eventId} {
+      allow read, write: if false;
+    }
+
+    match /ops_queue/{itemId} {
+      allow read, write: if false;
+    }
+
+    // Estados OAuth: candado de un solo uso, nunca legible desde un cliente.
+    match /oauth_states/{state} {
+      allow read, write: if false;
+    }
+
+    // Resultados de la conciliación: se revisan desde el panel.
+    match /reconciliation_runs/{runId} {
+      allow read, write: if false;
+    }
+    match /reconciliation_issues/{issueId} {
+      allow read, write: if false;
+    }
+    match /settlement_reports/{reportId} {
+      allow read, write: if false;
+    }
+
+    // ---------- panic_alerts ----------
+    match /panic_alerts/{alertId} {
+      // Se crea desde el dispositivo para que funcione aun si la función tarda;
+      // un trigger onCreate dispara SMS y notifica a seguridad.
+      allow create: if signedIn()
+                    && request.resource.data.userId == request.auth.uid
+                    && request.resource.data.keys().hasOnly([
+                         'userId', 'role', 'requestId', 'geo', 'triggeredAt', 'notes'
+                       ]);
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow update, delete: if isAdmin();
+    }
+  }
+}

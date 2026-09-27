@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<!--
+  Puente de OAuth: MP_OAUTH_REDIRECT_URI apunta acá.
+
+  Por qué existe: Mercado Pago exige una redirect_uri http(s) registrada, no
+  acepta un esquema custom (casaya://) como destino directo del consentimiento.
+  Esta página es el único trabajo que hace de puente: lee ?code=&state= de su
+  propia URL y los reenvía a donde corresponda según quién abrió el flujo.
+
+  Se publica como archivo estático (Firebase Hosting alcanza, sin función de
+  por medio: cuanto menos dependa esto de un backend que puede estar caído,
+  mejor, porque es el único punto de paso obligado de todo el flujo de cobro).
+
+  Ruta sugerida: https://casaya.app/oauth/mp-bridge/index.html
+  (o /oauth/mp-bridge/ si el hosting sirve index.html por directorio).
+-->
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="robots" content="noindex" />
+  <title>Conectando tu cuenta…</title>
+  <style>
+    :root {
+      --ink: #0f2233; --steel: #18628f; --slate: #64798a; --line: #dde4e9; --surface: #f2f5f7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      background: var(--surface); color: var(--ink);
+      font-family: -apple-system, "Inter", system-ui, sans-serif;
+      padding: 24px; padding-top: max(24px, env(safe-area-inset-top));
+      padding-bottom: max(24px, env(safe-area-inset-bottom));
+    }
+    .card {
+      max-width: 360px; width: 100%; background: #fff; border: 1px solid var(--line);
+      border-radius: 16px; padding: 28px; text-align: center;
+    }
+    .spinner {
+      width: 28px; height: 28px; margin: 0 auto 16px; border-radius: 50%;
+      border: 3px solid var(--line); border-top-color: var(--steel);
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h1 { font-size: 17px; margin: 0 0 6px; }
+    p { color: var(--slate); font-size: 14px; margin: 0; }
+    a.fallback {
+      display: none; margin-top: 18px; color: var(--steel); font-weight: 600; text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner" aria-hidden="true"></div>
+    <h1 id="title">Conectando tu cuenta de Mercado Pago</h1>
+    <p id="detail">Ya volvemos a CasaYa, un segundo.</p>
+    <a id="fallback" class="fallback" href="#">Volver a la app manualmente</a>
+  </div>
+
+  <script>
+    (function () {
+      var params = new URLSearchParams(window.location.search);
+      var code = params.get('code');
+      var state = params.get('state');
+      var error = params.get('error');
+
+      var title = document.getElementById('title');
+      var detail = document.getElementById('detail');
+      var fallback = document.getElementById('fallback');
+
+      // Mercado Pago manda error= cuando el usuario cancela el consentimiento
+      // en vez de completarlo. Se reenvía igual: la pantalla de la app sabe
+      // mostrar "no se completó" en lugar de spinner infinito.
+      if (error) {
+        var deepLinkErr = 'casaya://cobros?error=' + encodeURIComponent(error);
+        title.textContent = 'No se completó la conexión';
+        detail.textContent = 'Podés intentarlo de nuevo desde la app.';
+        window.location.href = deepLinkErr;
+        showFallback(deepLinkErr);
+        return;
+      }
+
+      if (!code || !state) {
+        title.textContent = 'Enlace incompleto';
+        detail.textContent = 'Faltan datos en la respuesta. Volvé a intentar desde la app.';
+        return;
+      }
+
+      var deepLink = 'casaya://cobros?code=' + encodeURIComponent(code) + '&state=' + encodeURIComponent(state);
+
+      // App instalada (móvil): el sistema operativo intercepta este redirect
+      // y abre CasaYa directo, sin llegar a mostrar el resto de esta página.
+      window.location.href = deepLink;
+
+      // Sin app instalada, o si quien abrió el flujo estaba en la versión
+      // web: a los 800ms, si seguimos acá, mandamos a la ruta equivalente de
+      // la app web, que procesa el mismo code/state por query string.
+      setTimeout(function () {
+        var webUrl = 'https://casaya.app/tecnico/cobros?code=' + encodeURIComponent(code)
+          + '&state=' + encodeURIComponent(state);
+        window.location.href = webUrl;
+        showFallback(webUrl);
+      }, 800);
+
+      function showFallback(url) {
+        fallback.href = url;
+        fallback.style.display = 'inline-block';
+      }
+    })();
+  </script>
+</body>
+</html>

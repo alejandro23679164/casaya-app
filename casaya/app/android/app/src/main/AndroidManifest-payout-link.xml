@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Fragmento a fusionar en android/app/src/main/AndroidManifest.xml.
+
+  Dónde va: dentro de la <activity android:name=".MainActivity" ...> que ya
+  trae el proyecto Flutter, como un <intent-filter> adicional (no reemplaza el
+  que abre la app desde el launcher; se agrega al lado).
+
+  Qué hace: cuando el navegador termina el consentimiento de Mercado Pago y
+  redirige a casaya://cobros?code=...&state=..., Android lo entrega a esta
+  activity en lugar de abrir el navegador de nuevo. android:host="cobros" es
+  lo que hace que SOLO ese subcamino abra la app — casaya://cualquier-otra-cosa
+  no matchea este filtro.
+
+  android:autoVerify="true" además habilita App Links verificados por Android,
+  que requieren el archivo assetlinks.json servido desde el dominio del
+  redirect real (ver nota abajo). Sin ese archivo, el esquema custom sigue
+  funcionando igual; autoVerify solo suma que el enlace se abra sin el diálogo
+  de "abrir con" cuando hay más de una app registrada para el mismo esquema.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <activity
+      android:name=".MainActivity"
+      android:exported="true"
+      android:launchMode="singleTop">
+
+      <!-- Filtro existente del launcher: NO tocar, va antes de este. -->
+      <!--
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+      -->
+
+      <!-- Deep link de vuelta desde Mercado Pago. -->
+      <intent-filter android:autoVerify="true">
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="casaya" android:host="cobros" />
+      </intent-filter>
+
+    </activity>
+  </application>
+</manifest>
+
+<!--
+  NOTA — MP_OAUTH_REDIRECT_URI en el backend:
+
+  El valor que Mercado Pago exige registrado en su panel de aplicación tiene
+  que ser una URL http(s) real, no un esquema custom: la mayoría de los
+  proveedores OAuth rechaza esquemas no estándar como redirect_uri directo.
+  El patrón estándar es un "puente":
+
+    1. MP_OAUTH_REDIRECT_URI = https://casaya.app/oauth/mp-bridge
+    2. Esa página estática (alojada en Firebase Hosting, sin backend) lee
+       ?code=...&state=... de su propia URL y hace un solo redirect a
+       casaya://cobros?code=...&state=..., que sí abre la app.
+    3. Ese mismo puente sirve para web: si quien abrió el flujo estaba en el
+       navegador, la página también puede detectar que no hay app instalada
+       (o correr directo en /tecnico/cobros de la SPA) y mandar para ahí en
+       vez de al esquema custom.
+
+  functions_extra/oauth-bridge/index.html trae esa página lista para publicar.
+-->
